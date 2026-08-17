@@ -113,7 +113,7 @@ backend/internal/web/dist/
 
 ### 字体
 
-全站使用 Maple Mono NF CN。字体文件随前端镜像打包，定义在 `frontend/src/style.css`，因此远程服务器不依赖本机安装字体。
+全站使用 Maple Mono NF CN。字体文件随前端镜像打包，定义在 `frontend/src/style.css`，因此远程服务器不依赖本机安装字体。当前使用 WOFF2 中文子集，保留项目源码中实际使用的字符；后台动态内容遇到未包含字符时会回退到系统等宽字体。
 
 字体文件和 `LICENSE.txt` 位于：
 

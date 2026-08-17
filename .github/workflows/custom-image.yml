@@ -10,7 +10,7 @@ on:
       theme_version:
         description: Theme revision used in the image tag
         required: false
-        default: theme3
+        default: theme4
 
 permissions:
   contents: read
@@ -47,7 +47,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/sub2api-custom
           tags: |
-            type=raw,value=${{ steps.version.outputs.value }}-${{ github.event.inputs.theme_version || 'theme3' }}
+            type=raw,value=${{ steps.version.outputs.value }}-${{ github.event.inputs.theme_version || 'theme4' }}
             type=sha,prefix=sha-
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request' }}
 
