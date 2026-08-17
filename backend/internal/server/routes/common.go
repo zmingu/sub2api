@@ -29,7 +29,11 @@ func RegisterCommonRoutes(r *gin.Engine) {
 			c.String(http.StatusBadGateway, "quote unavailable")
 			return
 		}
-		defer response.Body.Close()
+		defer func() {
+			if err := response.Body.Close(); err != nil {
+				_ = c.Error(err)
+			}
+		}()
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 			c.String(http.StatusBadGateway, "quote unavailable")
 			return
