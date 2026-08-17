@@ -89,7 +89,7 @@ onMounted(() => {
 
 <style scoped>
 .home-page {
-  font-family: 'LXGW WenKai', '霞鹜文楷', cursive;
+  font-family: 'Maple Mono NF CN', monospace;
 }
 
 .image-frame {

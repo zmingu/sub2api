@@ -81,6 +81,7 @@ pnpm --version
 ```text
 frontend/src/style.css              全局样式、按钮、卡片、字体、背景
 frontend/tailwind.config.js         Tailwind 颜色、字体和阴影 token
+frontend/public/fonts/              Maple Mono NF CN 字体文件及许可证
 frontend/src/views/HomeView.vue     首页结构和首页样式
 frontend/src/components/**/*.vue    局部公共组件或页面样式
 frontend/public/wallpapers/         本地壁纸资源
@@ -108,6 +109,16 @@ corepack pnpm run build
 
 ```text
 backend/internal/web/dist/
+```
+
+### 字体
+
+全站使用 Maple Mono NF CN。字体文件随前端镜像打包，定义在 `frontend/src/style.css`，因此远程服务器不依赖本机安装字体。
+
+字体文件和 `LICENSE.txt` 位于：
+
+```text
+frontend/public/fonts/
 ```
 
 ### 2. Docker 构建

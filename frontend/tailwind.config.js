@@ -48,9 +48,8 @@ export default {
       },
       fontFamily: {
         sans: [
-          'LXGW WenKai',
-          '霞鹜文楷',
-          'cursive'
+          'Maple Mono NF CN',
+          'monospace'
         ],
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace']
       },

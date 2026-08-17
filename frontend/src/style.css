@@ -1,4 +1,18 @@
-@import url('https://fonts.googleapis.com/css2?family=LXGW+WenKai:wght@400;700&display=swap');
+@font-face {
+  font-family: 'Maple Mono NF CN';
+  src: url('/fonts/MapleMono-NF-CN-Regular.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Maple Mono NF CN';
+  src: url('/fonts/MapleMono-NF-CN-Bold.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
 
 @tailwind base;
 @tailwind components;
@@ -10,7 +24,7 @@
   *::after {
     @apply border-accent-200 dark:border-dark-700;
     border-radius: 0 !important;
-    font-family: 'LXGW WenKai', '霞鹜文楷', cursive !important;
+    font-family: 'Maple Mono NF CN', monospace !important;
   }
 
   html {
@@ -20,7 +34,7 @@
   body {
     @apply bg-accent-50 text-primary-900 dark:bg-dark-950 dark:text-dark-100;
     @apply min-h-screen;
-    font-family: 'LXGW WenKai', '霞鹜文楷', cursive;
+    font-family: 'Maple Mono NF CN', monospace;
   }
 
   /* 自定义滚动条 - 仅针对 Firefox，避免 Chrome 取消 webkit 的全局定制 */
