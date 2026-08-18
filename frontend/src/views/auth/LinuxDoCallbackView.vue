@@ -594,7 +594,7 @@ async function finalizePendingAccountResponse(completion: LinuxDoPendingActionRe
   applyAdoptionSuggestionState(completion)
   const redirect = sanitizeRedirectPath(completion.redirect || redirectTo.value)
 
-  if (completion.error === 'invitation_required') {
+  if (completion.error === 'invitation_required' || completion.step === 'invitation_required') {
     pendingAccountAction.value = 'none'
     needsInvitation.value = true
     needsAdoptionConfirmation.value = false

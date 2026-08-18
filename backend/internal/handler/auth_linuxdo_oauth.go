@@ -446,6 +446,7 @@ func (h *AuthHandler) createLinuxDoOAuthChoicePendingSession(
 		suggestionEmail = canonicalEmail
 	}
 
+	invitationRequired := h != nil && h.settingSvc != nil && h.settingSvc.IsInvitationCodeEnabled(c.Request.Context())
 	completionResponse := map[string]any{
 		"step":                      oauthPendingChoiceStep,
 		"adoption_required":         true,
@@ -472,7 +473,14 @@ func (h *AuthHandler) createLinuxDoOAuthChoicePendingSession(
 	if forceEmailOnSignup && compatEmailUser == nil {
 		completionResponse["choice_reason"] = "force_email_on_signup"
 	}
-	if (emailVerificationRequired || forceEmailOnSignup) && compatEmailUser == nil {
+	// Linux.do supplies a stable synthetic email and a random password is generated
+	// by the OAuth registration service. When an invitation is required, the only
+	// missing input is the invitation code; do not ask the user for email/password.
+	if invitationRequired && compatEmailUser == nil {
+		completionResponse["step"] = "invitation_required"
+		completionResponse["choice_reason"] = "invitation_required"
+	}
+	if !invitationRequired && (emailVerificationRequired || forceEmailOnSignup) && compatEmailUser == nil {
 		completionResponse["step"] = "create_account_required"
 		completionResponse["email_binding_required"] = true
 		completionResponse["force_email_on_signup"] = true
