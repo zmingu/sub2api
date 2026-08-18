@@ -480,6 +480,7 @@ func (h *AuthHandler) createLinuxDoOAuthChoicePendingSession(
 		// Keep the invitation prompt as an error state. The completion handler
 		// treats non-empty step values as terminal pending states and would return
 		// the session again instead of consuming the submitted invitation code.
+		delete(completionResponse, "step")
 		completionResponse["error"] = "invitation_required"
 		completionResponse["choice_reason"] = "invitation_required"
 	}
