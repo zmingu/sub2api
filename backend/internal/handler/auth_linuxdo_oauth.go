@@ -477,7 +477,10 @@ func (h *AuthHandler) createLinuxDoOAuthChoicePendingSession(
 	// by the OAuth registration service. When an invitation is required, the only
 	// missing input is the invitation code; do not ask the user for email/password.
 	if invitationRequired && compatEmailUser == nil {
-		completionResponse["step"] = "invitation_required"
+		// Keep the invitation prompt as an error state. The completion handler
+		// treats non-empty step values as terminal pending states and would return
+		// the session again instead of consuming the submitted invitation code.
+		completionResponse["error"] = "invitation_required"
 		completionResponse["choice_reason"] = "invitation_required"
 	}
 	if !invitationRequired && (emailVerificationRequired || forceEmailOnSignup) && compatEmailUser == nil {
