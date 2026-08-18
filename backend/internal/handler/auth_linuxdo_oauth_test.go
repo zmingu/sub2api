@@ -626,6 +626,10 @@ func TestLinuxDoOAuthCallbackCreatesChoicePendingSessionWhenSignupRequiresInvite
 
 	completion, ok := session.LocalFlowState[oauthCompletionResponseKey].(map[string]any)
 	require.True(t, ok)
+	// configureLinuxDoOAuthTestHandler 会把 handler.settingSvc 置为 nil，
+	// 所以这里 invitationRequired 恒为 false：邀请码开关只到达 authService，
+	// 使 LoginOrRegisterOAuth 返回 ErrOAuthInvitationRequired 从而落到选择页。
+	// 真正的"只缺邀请码"分支见 TestCreateLinuxDoOAuthChoicePendingSessionMarksInvitationOnly。
 	require.Equal(t, oauthPendingChoiceStep, completion["step"])
 	require.Equal(t, "/dashboard", completion["redirect"])
 	require.Equal(t, "third_party_signup", completion["choice_reason"])
@@ -1069,6 +1073,126 @@ func TestCompleteLinuxDoOAuthRegistrationReturnsPendingSessionWhenChoiceStillReq
 	storedSession, err := client.PendingAuthSession.Get(ctx, session.ID)
 	require.NoError(t, err)
 	require.Nil(t, storedSession.ConsumedAt)
+}
+
+// 开启邀请码且没有可绑定的同邮箱账号时，Linux.do 只缺邀请码：
+// completion payload 必须标记 error=invitation_required 且不带 step，
+// 且即使同时开着「邮箱验证」和「第三方注册强制绑定邮箱」也不要求填邮箱/密码。
+// 这里直接构造 handler（不经过 configureLinuxDoOAuthTestHandler 把 settingSvc 置 nil），
+// 否则 invitationRequired 恒为 false，这个分支根本走不到。
+func TestCreateLinuxDoOAuthChoicePendingSessionMarksInvitationOnly(t *testing.T) {
+	handler, client := newOAuthPendingFlowTestHandlerWithOptions(t, true, true, nil)
+	ctx := context.Background()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/linuxdo/callback", nil)
+
+	syntheticEmail := linuxDoSyntheticEmail("invitation-only-777")
+	require.NoError(t, handler.createLinuxDoOAuthChoicePendingSession(
+		c,
+		service.PendingAuthIdentityKey{
+			ProviderType:    "linuxdo",
+			ProviderKey:     "linuxdo",
+			ProviderSubject: "invitation-only-777",
+		},
+		syntheticEmail,
+		syntheticEmail,
+		"/dashboard",
+		"invitation-only-browser",
+		map[string]any{"username": "linuxdo_invitation_only"},
+		syntheticEmail,
+		nil,
+		true, // emailVerificationRequired
+		true, // forceEmailOnSignup
+	))
+
+	session, err := client.PendingAuthSession.Query().
+		Where(pendingauthsession.ProviderSubjectEQ("invitation-only-777")).
+		Only(ctx)
+	require.NoError(t, err)
+
+	completion, ok := session.LocalFlowState[oauthCompletionResponseKey].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "invitation_required", completion["error"])
+	require.Equal(t, "invitation_required", completion["choice_reason"])
+	require.NotContains(t, completion, "step")
+
+	// complete-registration 必须把该状态识别为"只缺邀请码"，否则会被改写成选择页后原样返回。
+	require.True(t, linuxDoPendingSessionWantsInvitationOnly(session))
+}
+
+// 开启邀请码 + 开启邮箱验证时，Linux.do 的 pending session 只缺邀请码：
+// complete-registration 必须直接消费邀请码并签发 token，
+// 而不是被 legacyCompleteRegistrationSessionStatus 改写成 choose_account_action_required 后原样返回。
+func TestCompleteLinuxDoOAuthRegistrationConsumesInvitationWhenEmailVerifyEnabled(t *testing.T) {
+	handler, client := newOAuthPendingFlowTestHandlerWithOptions(t, true, true, nil)
+	ctx := context.Background()
+
+	invitation, err := client.RedeemCode.Create().
+		SetCode("LINUXDO-INVITE").
+		SetType(service.RedeemTypeInvitation).
+		SetStatus(service.StatusUnused).
+		SetValue(0).
+		Save(ctx)
+	require.NoError(t, err)
+
+	session, err := client.PendingAuthSession.Create().
+		SetSessionToken("linuxdo-invitation-only-session").
+		SetIntent(oauthIntentLogin).
+		SetProviderType("linuxdo").
+		SetProviderKey("linuxdo").
+		SetProviderSubject("linuxdo-invitation-only").
+		SetResolvedEmail("linuxdo-invitation-only@linuxdo-connect.invalid").
+		SetRedirectTo("/dashboard").
+		SetBrowserSessionKey("linuxdo-invitation-only-browser").
+		SetUpstreamIdentityClaims(map[string]any{
+			"username": "linuxdo_invite_only",
+		}).
+		SetLocalFlowState(map[string]any{
+			oauthCompletionResponseKey: map[string]any{
+				"error":             "invitation_required",
+				"choice_reason":     "invitation_required",
+				"adoption_required": true,
+				"redirect":          "/dashboard",
+			},
+		}).
+		SetExpiresAt(time.Now().UTC().Add(10 * time.Minute)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	body := bytes.NewBufferString(`{"invitation_code":"LINUXDO-INVITE"}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/oauth/linuxdo/complete-registration", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: oauthPendingSessionCookieName, Value: encodeCookieValue(session.SessionToken)})
+	req.AddCookie(&http.Cookie{Name: oauthPendingBrowserCookieName, Value: encodeCookieValue("linuxdo-invitation-only-browser")})
+	c.Request = req
+
+	handler.CompleteLinuxDoOAuthRegistration(c)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	responseData := decodeJSONBody(t, recorder)
+	require.NotEmpty(t, responseData["access_token"])
+	require.Equal(t, "Bearer", responseData["token_type"])
+	require.Empty(t, responseData["auth_result"])
+	require.Empty(t, responseData["step"])
+
+	user, err := client.User.Query().
+		Where(dbuser.EmailEQ("linuxdo-invitation-only@linuxdo-connect.invalid")).
+		Only(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "linuxdo", user.SignupSource)
+
+	storedInvitation, err := client.RedeemCode.Get(ctx, invitation.ID)
+	require.NoError(t, err)
+	require.NotNil(t, storedInvitation.UsedBy)
+	require.Equal(t, user.ID, *storedInvitation.UsedBy)
+
+	consumedSession, err := client.PendingAuthSession.Get(ctx, session.ID)
+	require.NoError(t, err)
+	require.NotNil(t, consumedSession.ConsumedAt)
 }
 
 func TestCompleteLinuxDoOAuthRegistrationBindsIdentityWithoutAdoptionFlags(t *testing.T) {

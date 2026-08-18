@@ -520,6 +520,20 @@ type completeLinuxDoOAuthRequest struct {
 	AdoptAvatar      *bool  `json:"adopt_avatar,omitempty"`
 }
 
+// linuxDoPendingSessionWantsInvitationOnly 判断 pending session 是否处于"只缺邀请码"状态，
+// 即 createLinuxDoOAuthChoicePendingSession 在开启邀请码且没有可绑定的同邮箱账号时写入的状态。
+// 同时兼容旧构建写入的 step=invitation_required，避免升级期间已经存在的会话卡在邀请码表单。
+func linuxDoPendingSessionWantsInvitationOnly(session *dbent.PendingAuthSession) bool {
+	if session == nil {
+		return false
+	}
+	payload, _ := readCompletionResponse(session.LocalFlowState)
+	if pendingSessionWantsInvitation(payload) {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(pendingSessionStringValue(payload, "step")), "invitation_required")
+}
+
 // CompleteLinuxDoOAuthRegistration completes a pending OAuth registration by validating
 // the invitation code and creating the user account.
 // POST /api/v1/auth/oauth/linuxdo/complete-registration
@@ -561,14 +575,20 @@ func (h *AuthHandler) CompleteLinuxDoOAuthRegistration(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	if updatedSession, handled, err := h.legacyCompleteRegistrationSessionStatus(c, session); err != nil {
-		response.ErrorFrom(c, err)
-		return
-	} else if handled {
-		c.JSON(http.StatusOK, buildPendingOAuthSessionStatusPayload(updatedSession))
-		return
-	} else {
-		session = updatedSession
+	// "只缺邀请码" 的 session 必须在这里消费邀请码并签发 token。
+	// 否则 legacyCompleteRegistrationSessionStatus 会在开启「邮箱验证」或「第三方注册强制绑定邮箱」时
+	// 把 session 改写成 choose_account_action_required 后原样返回 200，
+	// 前端拿不到 access_token（且 payload 里仍带 error=invitation_required），页面停在邀请码表单不跳转。
+	if !linuxDoPendingSessionWantsInvitationOnly(session) {
+		if updatedSession, handled, err := h.legacyCompleteRegistrationSessionStatus(c, session); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		} else if handled {
+			c.JSON(http.StatusOK, buildPendingOAuthSessionStatusPayload(updatedSession))
+			return
+		} else {
+			session = updatedSession
+		}
 	}
 	if err := h.ensureBackendModeAllowsNewUserLogin(c.Request.Context()); err != nil {
 		response.ErrorFrom(c, err)
