@@ -1,21 +1,28 @@
 # =============================================================================
-# Sub2API Multi-Stage Dockerfile
+# Sub2API Multi-Stage Dockerfile (custom theme image)
 # =============================================================================
 # Stage 1: Build frontend
 # Stage 2: Build Go backend with embedded frontend
-# Stage 3: Final minimal image
+# Stage 3: PostgreSQL client (version-matched with docker-compose)
+# Stage 4: Final minimal image
+#
+# Multi-arch: build with buildx, e.g.
+#   docker buildx build --platform linux/amd64,linux/arm64 -f deploy/Dockerfile .
 # =============================================================================
 
 ARG NODE_IMAGE=node:24-alpine
 ARG GOLANG_IMAGE=golang:1.26.6-alpine
-ARG ALPINE_IMAGE=alpine:3.20
+ARG ALPINE_IMAGE=alpine:3.21
+ARG POSTGRES_IMAGE=postgres:18-alpine
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
 
 # -----------------------------------------------------------------------------
 # Stage 1: Frontend Builder
 # -----------------------------------------------------------------------------
-FROM ${NODE_IMAGE} AS frontend-builder
+# --platform=$BUILDPLATFORM: the frontend output is JS (arch-neutral), so build
+# it on the native host arch instead of under QEMU emulation for the target.
+FROM --platform=${BUILDPLATFORM} ${NODE_IMAGE} AS frontend-builder
 
 WORKDIR /app/frontend
 ENV NODE_OPTIONS=--max-old-space-size=3072
@@ -40,7 +47,11 @@ RUN pnpm run build
 # -----------------------------------------------------------------------------
 # Stage 2: Backend Builder
 # -----------------------------------------------------------------------------
-FROM ${GOLANG_IMAGE} AS backend-builder
+# --platform=$BUILDPLATFORM: run the Go toolchain on the native host arch and
+# cross-compile to the target arch below. The binary is CGO_ENABLED=0, so this
+# is a clean pure-Go cross-compile — no QEMU emulation of go mod download / go
+# build (emulated networking here was dropping module fetches with EOF).
+FROM --platform=${BUILDPLATFORM} ${GOLANG_IMAGE} AS backend-builder
 
 # Build arguments for version info (set by CI)
 ARG VERSION=
@@ -48,6 +59,9 @@ ARG COMMIT=docker
 ARG DATE
 ARG GOPROXY
 ARG GOSUMDB
+# Populated by buildx from the --platform target (e.g. linux/arm64).
+ARG TARGETOS
+ARG TARGETARCH
 
 ENV GOPROXY=${GOPROXY}
 ENV GOSUMDB=${GOSUMDB}
@@ -69,17 +83,24 @@ COPY --from=frontend-builder /app/backend/internal/web/dist ./internal/web/dist
 
 # Build the binary (BuildType=release for CI builds, embed frontend)
 # Version precedence: build arg VERSION > exact git tag > cmd/server/VERSION
+# GOARCH=${TARGETARCH} is required: the toolchain runs on BUILDPLATFORM, so
+# without it the binary would be built for the builder arch, not the target.
 RUN VERSION_VALUE="${VERSION}" && \
     if [ -z "${VERSION_VALUE}" ]; then VERSION_VALUE="$(./scripts/resolve-version.sh)"; fi && \
     DATE_VALUE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
-    CGO_ENABLED=0 GOOS=linux go build \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
     -tags embed \
     -ldflags="-s -w -X main.Version=${VERSION_VALUE} -X main.Commit=${COMMIT} -X main.Date=${DATE_VALUE} -X main.BuildType=release" \
     -o /app/sub2api \
     ./cmd/server
 
 # -----------------------------------------------------------------------------
-# Stage 3: Final Runtime Image
+# Stage 3: PostgreSQL Client (version-matched with docker-compose)
+# -----------------------------------------------------------------------------
+FROM ${POSTGRES_IMAGE} AS pg-client
+
+# -----------------------------------------------------------------------------
+# Stage 4: Final Runtime Image
 # -----------------------------------------------------------------------------
 FROM ${ALPINE_IMAGE}
 
@@ -89,12 +110,27 @@ LABEL description="Sub2API - AI API Gateway Platform"
 LABEL org.opencontainers.image.source="https://github.com/Wei-Shaw/sub2api"
 
 # Install runtime dependencies
+# libpq + zstd/lz4/krb5/ldap/edit are the shared libraries pg_dump and psql
+# link against; without them the backup/restore feature fails at exec time.
 RUN apk add --no-cache \
     ca-certificates \
     tzdata \
     curl \
     su-exec \
+    libpq \
+    zstd-libs \
+    lz4-libs \
+    krb5-libs \
+    libldap \
+    libedit \
     && rm -rf /var/cache/apk/*
+
+# Copy pg_dump and psql from the same postgres image used in docker-compose.
+# This ensures version consistency between backup tools and the database server
+# (backend/internal/repository/backup_pg_dumper.go shells out to these).
+COPY --from=pg-client /usr/local/bin/pg_dump /usr/local/bin/pg_dump
+COPY --from=pg-client /usr/local/bin/psql /usr/local/bin/psql
+COPY --from=pg-client /usr/local/lib/libpq.so.5* /usr/local/lib/
 
 # Create non-root user
 RUN addgroup -g 1000 sub2api && \

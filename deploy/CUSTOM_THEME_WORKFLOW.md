@@ -132,6 +132,16 @@ docker build --pull -f deploy\Dockerfile -t sub2api-custom:local .
 
 如果出现 Node heap out of memory，确认 Dockerfile 的 `NODE_OPTIONS` 有足够堆内存。
 
+本地 `docker build` 只产出**当前主机架构**的单架构镜像，用于本机验证足够。
+多架构镜像（amd64 + arm64）由 CI 产出，见第四节。如果要在本地手工产出多架构镜像：
+
+```powershell
+docker buildx build --platform linux/amd64,linux/arm64 `
+  -f deploy\Dockerfile -t ghcr.io/zmingu/sub2api-custom:test --push .
+```
+
+buildx 不支持把多架构镜像 `--load` 进本地 docker images，只能 `--push` 到仓库。
+
 ### 3. 本地 Compose
 
 本地 `deploy/.env` 不提交 Git。首次运行需要设置至少：
@@ -202,6 +212,29 @@ ghcr.io/zmingu/sub2api-custom:latest
 
 生产部署优先使用固定版本标签，不要依赖 `latest`。
 
+### 多架构验证
+
+workflow 构建 `linux/amd64,linux/arm64` 两个架构并合成 manifest list。
+推送完成后确认两个架构都在：
+
+```bash
+docker buildx imagetools inspect ghcr.io/zmingu/sub2api-custom:0.1.177-theme4
+```
+
+预期输出包含：
+
+```text
+Platform:  linux/amd64
+Platform:  linux/arm64
+```
+
+只出现一个平台说明 workflow 的 `platforms:` 没生效，ARM 机器会拉不到镜像。
+
+构建时长：arm64 的最终 runtime 层（`apk add` / `adduser`）跑在 QEMU 下，
+比单架构构建多几分钟属正常。前端和 Go 编译仍在 runner 原生 amd64 上跑，
+不受 QEMU 影响（`deploy/Dockerfile` 的 builder 阶段用 `--platform=$BUILDPLATFORM`
+交叉编译，`GOARCH=${TARGETARCH}` 决定输出架构）。
+
 ## 五、远程服务器无损更新
 
 远程目录：
@@ -256,6 +289,46 @@ sub2api-redis healthy
 ```
 
 如果使用外部反向代理或域名，再从浏览器访问实际域名检查页面。
+
+### ARM 机器（aarch64）部署
+
+镜像是多架构 manifest list，ARM 机器上的命令与 x86 完全一致，
+docker 会自动选中 `linux/arm64` 变体。无需修改 `docker-compose.custom.yml`：
+依赖的 `postgres:18-alpine`、`redis:8-alpine` 官方均提供 arm64。
+
+首次部署前置检查：
+
+```bash
+uname -m                      # 预期 aarch64
+docker login ghcr.io          # GHCR package 若为 private 必须先登录
+docker compose pull sub2api
+docker inspect sub2api --format '{{.Architecture}}'   # 预期 arm64
+```
+
+GHCR package 首次推送默认是 private。若不想在服务器上存登录凭据，
+到 `https://github.com/users/zmingu/packages/container/sub2api-custom/settings`
+把可见性改为 public。
+
+### 从 x86 机器迁移到 ARM 机器
+
+**不要直接复制 `deploy/postgres_data`。** 那是 bind mount 的 PGDATA 原始数据目录，
+跨 CPU 架构复制 PGDATA，PostgreSQL 官方不保证兼容。正确做法是逻辑迁移：
+
+```bash
+# 旧机器（x86）导出
+docker compose exec -T postgres pg_dump -U sub2api -Fc sub2api > sub2api.dump
+
+# 新机器（ARM）：先起 postgres，再恢复
+docker compose -f deploy/docker-compose.custom.yml up -d postgres
+docker compose -f deploy/docker-compose.custom.yml exec -T postgres   pg_restore -U sub2api -d sub2api --clean --if-exists < sub2api.dump
+
+# 最后起应用
+docker compose -f deploy/docker-compose.custom.yml up -d
+```
+
+`deploy/redis_data` 的 RDB/AOF 是架构无关的，可以直接复制。
+`deploy/.env` 里的 `JWT_SECRET`、`TOTP_ENCRYPTION_KEY` 必须原样带到新机器，
+否则已签发的 token 和已绑定的 TOTP 全部失效。
 
 ## 六、回滚
 
