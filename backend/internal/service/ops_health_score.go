@@ -31,6 +31,34 @@ func computeDashboardHealthScore(now time.Time, overview *OpsDashboardOverview) 
 	return int(math.Round(clampFloat64(score, 0, 100)))
 }
 
+// TTFT scoring thresholds, in milliseconds, applied to the P99 time to first token.
+//
+// The original 1s/3s scale was written for non-reasoning chat completions, where
+// the first token follows almost immediately. A reasoning model emits its
+// reasoning pass before the first visible token, so several seconds is its
+// healthy floor rather than a fault, and any scale that zeroes at 3s reports 0
+// permanently and stops carrying information.
+//
+// Calibrated against this deployment's measured P99 (gpt-5.6-luna via
+// ai-plugin.io, 8394 samples over 24h): p50 5.7s, p90 14.3s, p95 21.2s,
+// p99 45.5s. Hourly P99 over healthy operation ranged 17s-54s -- a 3x swing
+// with no incident behind it, because P99 on a long-tail reasoning workload is
+// decided by a handful of slow requests. Thresholds narrower than that band
+// would make the score oscillate for no operational reason.
+//
+// So: full marks at or below 30s, which covers the good end of the observed
+// healthy band; zero at 120s, roughly 2.6x the current P99 and far outside
+// anything observed while the service was working, where 1% of requests waiting
+// two minutes for a first token is genuinely broken. In between it degrades
+// linearly, so ordinary drift still moves the number.
+//
+// These are workload-specific: a deployment serving non-reasoning models should
+// scale them back down.
+const (
+	opsTTFTP99FullScoreMs = 30000.0
+	opsTTFTP99ZeroScoreMs = 120000.0
+)
+
 // computeBusinessHealth calculates business health score (0-100)
 // Components: Error Rate (50%) + TTFT (50%)
 func computeBusinessHealth(overview *OpsDashboardOverview) float64 {
@@ -48,14 +76,14 @@ func computeBusinessHealth(overview *OpsDashboardOverview) float64 {
 		}
 	}
 
-	// TTFT score: 1s → 100, 3s → 0 (linear)
+	// TTFT score: opsTTFTP99FullScoreMs → 100, opsTTFTP99ZeroScoreMs → 0 (linear)
 	// Time to first token is critical for user experience
 	ttftScore := 100.0
 	if overview.TTFT.P99 != nil {
 		p99 := float64(*overview.TTFT.P99)
-		if p99 > 1000 {
-			if p99 <= 3000 {
-				ttftScore = (3000 - p99) / 2000 * 100
+		if p99 > opsTTFTP99FullScoreMs {
+			if p99 <= opsTTFTP99ZeroScoreMs {
+				ttftScore = (opsTTFTP99ZeroScoreMs - p99) / (opsTTFTP99ZeroScoreMs - opsTTFTP99FullScoreMs) * 100
 			} else {
 				ttftScore = 0
 			}

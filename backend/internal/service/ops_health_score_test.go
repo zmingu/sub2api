@@ -31,7 +31,9 @@ func TestComputeDashboardHealthScore_DegradesOnBadSignals(t *testing.T) {
 		UpstreamErrorRate: 0.08,
 
 		Duration: OpsPercentiles{P99: intPtr(20_000)},
-		TTFT:     OpsPercentiles{P99: intPtr(2_000)},
+		// Bad under the recalibrated reasoning-model scale (zero at 120s), so
+		// TTFT still contributes a degraded signal to this fixture.
+		TTFT:     OpsPercentiles{P99: intPtr(150_000)},
 
 		SystemMetrics: &OpsSystemMetricsSnapshot{
 			DBOK:                  boolPtr(false),
@@ -303,15 +305,63 @@ func TestComputeBusinessHealth(t *testing.T) {
 			wantMax: 78,
 		},
 		{
-			name: "TTFT boundary 2s",
+			// A reasoning model's ordinary first-token latency. Under the old
+			// 1s/3s scale this scored 0 and dragged business health to 50 on a
+			// service that was working normally.
+			name: "TTFT typical reasoning latency is not penalised",
 			overview: &OpsDashboardOverview{
 				SLA:               0.99,
 				ErrorRate:         0,
 				UpstreamErrorRate: 0,
-				TTFT:              OpsPercentiles{P99: intPtr(2000)},
+				TTFT:              OpsPercentiles{P99: intPtr(6000)},
+			},
+			wantMin: 100,
+			wantMax: 100,
+		},
+		{
+			name: "TTFT full-score boundary",
+			overview: &OpsDashboardOverview{
+				SLA:               0.99,
+				ErrorRate:         0,
+				UpstreamErrorRate: 0,
+				TTFT:              OpsPercentiles{P99: intPtr(30_000)},
+			},
+			wantMin: 100,
+			wantMax: 100,
+		},
+		{
+			// Midpoint of the 30s-120s ramp: ttftScore 50, business 100*0.5+50*0.5.
+			name: "TTFT midpoint degrades linearly",
+			overview: &OpsDashboardOverview{
+				SLA:               0.99,
+				ErrorRate:         0,
+				UpstreamErrorRate: 0,
+				TTFT:              OpsPercentiles{P99: intPtr(75_000)},
 			},
 			wantMin: 75,
 			wantMax: 75,
+		},
+		{
+			name: "TTFT zero-score boundary",
+			overview: &OpsDashboardOverview{
+				SLA:               0.99,
+				ErrorRate:         0,
+				UpstreamErrorRate: 0,
+				TTFT:              OpsPercentiles{P99: intPtr(120_000)},
+			},
+			wantMin: 50,
+			wantMax: 50,
+		},
+		{
+			name: "TTFT beyond zero-score boundary stays at zero",
+			overview: &OpsDashboardOverview{
+				SLA:               0.99,
+				ErrorRate:         0,
+				UpstreamErrorRate: 0,
+				TTFT:              OpsPercentiles{P99: intPtr(300_000)},
+			},
+			wantMin: 50,
+			wantMax: 50,
 		},
 		{
 			name: "upstream error dominates",
