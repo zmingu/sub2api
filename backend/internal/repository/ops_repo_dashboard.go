@@ -876,6 +876,19 @@ func (r *opsRepository) queryErrorCounts(ctx context.Context, filter *service.Op
 	upstream529 int64,
 	err error,
 ) {
+	// upstream_excl is the numerator of UpstreamErrorRate, whose denominator is
+	// requestCountSLA (successCount + errorCountSLA). It therefore has to count the
+	// same thing error_sla counts: a request the client saw fail. ops_error_logs also
+	// records upstream failures that were recovered by failover, which carry
+	// status_code 200 and are already counted as successes in the denominator;
+	// without the status_code guard those inflated the rate above the real failure
+	// rate and, because the health score takes max(errorRate, upstreamErrorRate),
+	// could pin the error score at 0 while the service was actually serving fine.
+	//
+	// upstream_429 / upstream_529 deliberately keep counting recovered occurrences:
+	// they are standalone occurrence counters for reporting, never divided into a
+	// rate, and "how often did the upstream rate-limit us, even when we recovered"
+	// is the useful reading there.
 	where, args, _ := buildErrorWhere(filter, start, end, 1)
 
 	q := `
@@ -883,7 +896,7 @@ SELECT
   COALESCE(COUNT(*) FILTER (WHERE COALESCE(status_code, 0) >= 400), 0) AS error_total,
   COALESCE(COUNT(*) FILTER (WHERE COALESCE(status_code, 0) >= 400 AND is_business_limited), 0) AS business_limited,
   COALESCE(COUNT(*) FILTER (WHERE COALESCE(status_code, 0) >= 400 AND NOT is_business_limited), 0) AS error_sla,
-  COALESCE(COUNT(*) FILTER (WHERE error_owner = 'provider' AND NOT is_business_limited AND COALESCE(upstream_status_code, status_code, 0) NOT IN (429, 529)), 0) AS upstream_excl,
+  COALESCE(COUNT(*) FILTER (WHERE COALESCE(status_code, 0) >= 400 AND error_owner = 'provider' AND NOT is_business_limited AND COALESCE(upstream_status_code, status_code, 0) NOT IN (429, 529)), 0) AS upstream_excl,
   COALESCE(COUNT(*) FILTER (WHERE error_owner = 'provider' AND NOT is_business_limited AND COALESCE(upstream_status_code, status_code, 0) = 429), 0) AS upstream_429,
   COALESCE(COUNT(*) FILTER (WHERE error_owner = 'provider' AND NOT is_business_limited AND COALESCE(upstream_status_code, status_code, 0) = 529), 0) AS upstream_529
 FROM ops_error_logs
