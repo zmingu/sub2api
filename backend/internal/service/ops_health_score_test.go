@@ -440,3 +440,53 @@ func TestComputeInfraHealth(t *testing.T) {
 func timePtr(v time.Time) *time.Time { return &v }
 
 func stringPtr(v string) *string { return &v }
+
+// TestComputeInfraHealth_PeriodicJobsAreNotStale pins the production shape that
+// motivated per-job staleness tolerances: ops_cleanup runs once a day and
+// ops_preaggregation_daily ticks hourly, so both are routinely far older than
+// 15 minutes while being perfectly healthy. Under a flat 15-minute rule they
+// counted as 2 of 5 failed jobs and permanently cost the score ~4 points.
+func TestComputeInfraHealth_PeriodicJobsAreNotStale(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 21, 14, 45, 0, 0, time.UTC)
+	healthyMetrics := &OpsSystemMetricsSnapshot{
+		DBOK:               boolPtr(true),
+		RedisOK:            boolPtr(true),
+		CPUUsagePercent:    float64Ptr(2.9),
+		MemoryUsagePercent: float64Ptr(0.8),
+	}
+
+	ov := &OpsDashboardOverview{
+		SystemMetrics: healthyMetrics,
+		JobHeartbeats: []*OpsJobHeartbeat{
+			// Sub-minute cadence, just ran.
+			{JobName: "ops_metrics_collector", LastSuccessAt: timePtr(now.Add(-10 * time.Second))},
+			{JobName: "ops_alert_evaluator", LastSuccessAt: timePtr(now.Add(-1 * time.Minute))},
+			// 10m ticker, mid-cycle.
+			{JobName: opsAggHourlyJobName, LastSuccessAt: timePtr(now.Add(-8 * time.Minute))},
+			// 1h ticker, mid-cycle: 38 minutes old is normal, not stale.
+			{JobName: opsAggDailyJobName, LastSuccessAt: timePtr(now.Add(-38 * time.Minute))},
+			// Daily cron at 02:00: ~19h old at this time of day is normal.
+			{JobName: opsCleanupJobName, LastSuccessAt: timePtr(now.Add(-19 * time.Hour))},
+		},
+	}
+
+	require.Equal(t, 100.0, computeInfraHealth(now, ov),
+		"healthy host with on-cadence periodic jobs must score a full infra 100")
+
+	// Same jobs, genuinely stuck: each is now well past its own cadence.
+	stuck := &OpsDashboardOverview{
+		SystemMetrics: healthyMetrics,
+		JobHeartbeats: []*OpsJobHeartbeat{
+			{JobName: opsAggHourlyJobName, LastSuccessAt: timePtr(now.Add(-3 * time.Hour))},
+			{JobName: opsAggDailyJobName, LastSuccessAt: timePtr(now.Add(-6 * time.Hour))},
+			{JobName: opsCleanupJobName, LastSuccessAt: timePtr(now.Add(-48 * time.Hour))},
+		},
+	}
+	require.Equal(t, 70.0, computeInfraHealth(now, stuck),
+		"jobs past their own cadence must still be reported as failed")
+
+	// An unknown job keeps the conservative default window.
+	require.Equal(t, opsJobDefaultStalenessTolerance, opsJobStalenessTolerance("some_new_job"))
+}

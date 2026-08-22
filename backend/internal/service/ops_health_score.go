@@ -120,7 +120,7 @@ func computeInfraHealth(now time.Time, overview *OpsDashboardOverview) float64 {
 		totalJobs++
 		if hb.LastErrorAt != nil && (hb.LastSuccessAt == nil || hb.LastErrorAt.After(*hb.LastSuccessAt)) {
 			failedJobs++
-		} else if hb.LastSuccessAt != nil && now.Sub(*hb.LastSuccessAt) > 15*time.Minute {
+		} else if hb.LastSuccessAt != nil && now.Sub(*hb.LastSuccessAt) > opsJobStalenessTolerance(hb.JobName) {
 			failedJobs++
 		}
 	}
@@ -130,6 +130,36 @@ func computeInfraHealth(now time.Time, overview *OpsDashboardOverview) float64 {
 
 	// Weighted combination
 	return storageScore*0.4 + computeScore*0.3 + jobScore*0.3
+}
+
+// opsJobDefaultStalenessTolerance is the staleness window applied to jobs that
+// run at least every few minutes (metrics collector, alert evaluator, ...).
+const opsJobDefaultStalenessTolerance = 15 * time.Minute
+
+// opsJobStalenessTolerance reports how long a background job may go without a
+// success before it should count as failed in the infrastructure health score.
+//
+// A single flat window cannot be correct for every job: ops_cleanup is
+// cron-scheduled once a day and ops_preaggregation_daily ticks hourly, so a
+// flat 15-minute rule reports both as failed for most of their own period even
+// though they never errored. That permanently removed ~4 points from the score
+// while hiding whether the frequently-running jobs were actually healthy.
+//
+// The tolerance is therefore derived from each job's own cadence, with slack
+// for a run that starts late or takes a while.
+func opsJobStalenessTolerance(jobName string) time.Duration {
+	switch jobName {
+	case opsCleanupJobName:
+		// Cron-scheduled; daily by default and admin-configurable. A daily job
+		// that has not succeeded for more than a day is genuinely stuck.
+		return 26 * time.Hour
+	case opsAggDailyJobName:
+		return 2 * opsAggDailyInterval
+	case opsAggHourlyJobName:
+		return 2 * opsAggHourlyInterval
+	default:
+		return opsJobDefaultStalenessTolerance
+	}
 }
 
 func clampFloat64(v float64, min float64, max float64) float64 {
